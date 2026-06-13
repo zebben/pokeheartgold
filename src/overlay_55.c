@@ -35,11 +35,19 @@ static const OverlayManagerTemplate ov55_021E5C04 = {
     .ovy_id = FS_OVERLAY_ID(OVY_102),
 };
 
-static UnkStruct_ov55_021E5B08 *ov55_021E5B08(Mail *, enum HeapID);
-static void ov55_021E5BAC(UnkStruct_ov55_021E5B08 *);
-static void ov55_021E5BC4(Mail *, UnkStruct_ov55_021E5B08 *);
+enum MailAppState {
+    MAIL_STATE_OPEN_VIEWER = 0,
+    MAIL_STATE_VIEWING,
+    MAIL_STATE_EXIT,
+    MAIL_STATE_EDIT_SENTENCE_START,
+    MAIL_STATE_EDITING,
+};
 
-static BOOL ov55_021E5900(OverlayManager **manager) {
+static MailViewerAppArgs *MailViewerAppArgs_New(Mail *mail, enum HeapID heapID);
+static void MailViewerAppArgs_Free(MailViewerAppArgs *args);
+static void Mail_UpdateFromViewerArgs(Mail *mail, MailViewerAppArgs *args);
+
+static BOOL MailApp_RunSubApplication(OverlayManager **manager) {
     if (*manager != NULL && OverlayManager_Run(*manager)) {
         OverlayManager_Delete(*manager);
         *manager = NULL;
@@ -50,91 +58,91 @@ static BOOL ov55_021E5900(OverlayManager **manager) {
 }
 
 BOOL ov55_UnkApp_Init(OverlayManager *manager, int *state) {
-    UnkStruct_ov55_021E5924 *overlayData;
-    UseMailArgs *args;
+    MailApp *mailApp;
+    MailAppArgs *args;
 
     args = OverlayManager_GetArgs(manager);
     Heap_Create(HEAP_ID_3, HEAP_ID_OV55, 0x1000);
-    overlayData = OverlayManager_CreateAndGetData(manager, sizeof(UnkStruct_ov55_021E5924), HEAP_ID_OV55);
-    MI_CpuFill8(overlayData, 0, sizeof(UnkStruct_ov55_021E5924));
+    mailApp = OverlayManager_CreateAndGetData(manager, sizeof(MailApp), HEAP_ID_OV55);
+    MI_CpuFill8(mailApp, 0, sizeof(MailApp));
 
-    overlayData->heapID = HEAP_ID_OV55;
-    overlayData->unk10 = ov55_021E5B08(args->mail, HEAP_ID_OV55);
-    overlayData->unk10->options = Save_PlayerData_GetOptionsAddr(args->saveData);
-    if (args->unk0 == 1) {
-        overlayData->unk10->mailType = args->mailType;
+    mailApp->heapID = HEAP_ID_OV55;
+    mailApp->viewerArgs = MailViewerAppArgs_New(args->mail, HEAP_ID_OV55);
+    mailApp->viewerArgs->options = Save_PlayerData_GetOptionsAddr(args->saveData);
+    if (args->writeMode == TRUE) {
+        mailApp->viewerArgs->mailType = args->mailType;
     }
-    if (overlayData->unk10->mailType >= NUM_MAIL) {
-        overlayData->unk10->mailType = MAIL_GRASS;
+    if (mailApp->viewerArgs->mailType >= NUM_MAIL) {
+        mailApp->viewerArgs->mailType = MAIL_GRASS;
     }
-    overlayData->unk10->unk0 = args->unk0;
-    overlayData->unk10->menuInputStateMgr = args->menuInputStatePtr;
+    mailApp->viewerArgs->writeMode = args->writeMode;
+    mailApp->viewerArgs->menuInputStateMgr = args->menuInputStatePtr;
     return TRUE;
 }
 
 BOOL ov55_UnkApp_Main(OverlayManager *manager, int *state) {
-    UnkStruct_ov55_021E5924 *overlayData = OverlayManager_GetData(manager);
-    UseMailArgs *args = OverlayManager_GetArgs(manager);
+    MailApp *mailApp = OverlayManager_GetData(manager);
+    MailAppArgs *args = OverlayManager_GetArgs(manager);
 
     switch (*state) {
-    case 0:
-        overlayData->unk10->unk0 = args->unk0;
-        overlayData->unkC = OverlayManager_New(&ov55_021E5BF4, overlayData->unk10, overlayData->heapID);
-        *state = 1;
+    case MAIL_STATE_OPEN_VIEWER:
+        mailApp->viewerArgs->writeMode = args->writeMode;
+        mailApp->subOverlayManager = OverlayManager_New(&ov55_021E5BF4, mailApp->viewerArgs, mailApp->heapID);
+        *state = MAIL_STATE_VIEWING;
         break;
 
-    case 1:
-        if (!ov55_021E5900(&overlayData->unkC)) {
+    case MAIL_STATE_VIEWING:
+        if (!MailApp_RunSubApplication(&mailApp->subOverlayManager)) {
             break;
         }
 
-        switch (overlayData->unk10->unk0) {
+        switch (mailApp->viewerArgs->result) {
         case 0xFFFF:
-            *state = 2;
+            *state = MAIL_STATE_EXIT;
             break;
         case 3:
-            *state = 2;
+            *state = MAIL_STATE_EXIT;
             break;
         default:
-            *state = 3;
+            *state = MAIL_STATE_EDIT_SENTENCE_START;
             break;
         }
 
         break;
 
-    case 2:
-        if (args->unk0 == 1) {
-            if (overlayData->unk10->unk0 == 3) {
-                ov55_021E5BC4(args->mail, overlayData->unk10);
+    case MAIL_STATE_EXIT:
+        if (args->writeMode == TRUE) {
+            if (mailApp->viewerArgs->result == 3) {
+                Mail_UpdateFromViewerArgs(args->mail, mailApp->viewerArgs);
                 GameStats_AddScore(Save_GameStats_Get(args->saveData), GAME_STAT_SCORE);
                 GameStats_Inc(Save_GameStats_Get(args->saveData), GAME_STAT_UNK46);
-                args->unk4 = 1;
+                args->mailWritten = TRUE;
             } else {
-                args->unk4 = 0;
+                args->mailWritten = FALSE;
             }
         }
 
         return TRUE;
 
-    case 3:
-        overlayData->unk8 = EasyChat_CreateArgs(2, 0, args->saveData, args->menuInputStatePtr, overlayData->heapID);
-        if (MailMsg_IsInit(&overlayData->unk10->mailMessages[overlayData->unk10->mailMessageIdx])) {
-            MailMsg_Copy(&overlayData->unk14, &overlayData->unk10->mailMessages[overlayData->unk10->mailMessageIdx]);
+    case MAIL_STATE_EDIT_SENTENCE_START:
+        mailApp->easyChatArgs = EasyChat_CreateArgs(2, 0, args->saveData, args->menuInputStatePtr, mailApp->heapID);
+        if (MailMsg_IsInit(&mailApp->viewerArgs->sentences[mailApp->viewerArgs->sentenceIndex])) {
+            MailMsg_Copy(&mailApp->selectedSentence, &mailApp->viewerArgs->sentences[mailApp->viewerArgs->sentenceIndex]);
         } else {
-            MailMsg_Init_WithBank(&overlayData->unk14, MAILMSG_BANK_0293_GMM);
+            MailMsg_Init_WithBank(&mailApp->selectedSentence, MAILMSG_BANK_0293_GMM);
         }
-        sub_02090D20(overlayData->unk8, &overlayData->unk14);
-        overlayData->unkC = OverlayManager_New(&ov55_021E5C04, overlayData->unk8, overlayData->heapID);
-        *state = 4;
+        sub_02090D20(mailApp->easyChatArgs, &mailApp->selectedSentence);
+        mailApp->subOverlayManager = OverlayManager_New(&ov55_021E5C04, mailApp->easyChatArgs, mailApp->heapID);
+        *state = MAIL_STATE_EDITING;
         break;
 
-    case 4:
-        if (ov55_021E5900(&overlayData->unkC)) {
-            if (sub_02090D48(overlayData->unk8) == 0) {
-                sub_02090D60(overlayData->unk8, &overlayData->unk10->mailMessages[overlayData->unk10->mailMessageIdx]);
+    case MAIL_STATE_EDITING:
+        if (MailApp_RunSubApplication(&mailApp->subOverlayManager)) {
+            if (sub_02090D48(mailApp->easyChatArgs) == 0) {
+                sub_02090D60(mailApp->easyChatArgs, &mailApp->viewerArgs->sentences[mailApp->viewerArgs->sentenceIndex]);
             }
-            EasyChat_FreeArgs(overlayData->unk8);
-            *state = 0;
+            EasyChat_FreeArgs(mailApp->easyChatArgs);
+            *state = MAIL_STATE_OPEN_VIEWER;
         }
 
         break;
@@ -144,47 +152,47 @@ BOOL ov55_UnkApp_Main(OverlayManager *manager, int *state) {
 }
 
 BOOL ov55_UnkApp_Exit(OverlayManager *manager, int *state) {
-    UnkStruct_ov55_021E5924 *overlayData = OverlayManager_GetData(manager);
-    ov55_021E5BAC(overlayData->unk10);
+    MailApp *mailApp = OverlayManager_GetData(manager);
+    MailViewerAppArgs_Free(mailApp->viewerArgs);
     OverlayManager_FreeData(manager);
-    Heap_Destroy(overlayData->heapID);
+    Heap_Destroy(mailApp->heapID);
     return TRUE;
 }
 
-static UnkStruct_ov55_021E5B08 *ov55_021E5B08(Mail *mail, enum HeapID heapID) {
-    UnkStruct_ov55_021E5B08 *ret = Heap_Alloc(heapID, sizeof(UnkStruct_ov55_021E5B08));
-    MI_CpuFill8(ret, 0, sizeof(UnkStruct_ov55_021E5B08));
+static MailViewerAppArgs *MailViewerAppArgs_New(Mail *mail, enum HeapID heapID) {
+    MailViewerAppArgs *args = Heap_Alloc(heapID, sizeof(MailViewerAppArgs));
+    MI_CpuFill8(args, 0, sizeof(MailViewerAppArgs));
 
-    ret->unk0 = 0;
-    ret->mailOTID = Mail_GetOTID(mail);
-    ret->mailAuthorName = String_New(PLAYER_NAME_LENGTH + 1, heapID);
-    CopyU16ArrayToString(ret->mailAuthorName, Mail_GetAuthorNamePtr(mail));
-    ret->mailType = Mail_GetType(mail);
-    ret->mailLanguage = Mail_GetLanguage(mail);
-    ret->mailVersion = Mail_GetVersion(mail);
+    args->writeMode = FALSE;
+    args->trainerID = Mail_GetOTID(mail);
+    args->trainerName = String_New(PLAYER_NAME_LENGTH + 1, heapID);
+    CopyU16ArrayToString(args->trainerName, Mail_GetAuthorNamePtr(mail));
+    args->mailType = Mail_GetType(mail);
+    args->language = Mail_GetLanguage(mail);
+    args->gameVersion = Mail_GetVersion(mail);
 
     for (u16 i = 0; i < 3; i++) {
-        ret->unk18[i] = sub_0202B404(mail, (u8)i, 2, sub_0202B4E4(mail));
+        args->iconData[i] = sub_0202B404(mail, (u8)i, 2, sub_0202B4E4(mail));
     }
 
     for (u16 i = 0; i < 3; i++) {
-        MailMsg_Copy(&ret->mailMessages[i], Mail_GetUnk20Array(mail, (u8)i));
+        MailMsg_Copy(&args->sentences[i], Mail_GetUnk20Array(mail, (u8)i));
     }
 
-    return ret;
+    return args;
 }
 
-static void ov55_021E5BAC(UnkStruct_ov55_021E5B08 *unk) {
-    if (unk->mailAuthorName != NULL) {
-        String_Delete(unk->mailAuthorName);
+static void MailViewerAppArgs_Free(MailViewerAppArgs *args) {
+    if (args->trainerName != NULL) {
+        String_Delete(args->trainerName);
     }
 
-    Heap_Free(unk);
+    Heap_Free(args);
 }
 
-static void ov55_021E5BC4(Mail *mail, UnkStruct_ov55_021E5B08 *unk) {
+static void Mail_UpdateFromViewerArgs(Mail *mail, MailViewerAppArgs *args) {
     for (u16 i = 0; i < 3; i++) {
-        Mail_SetMessage(mail, &unk->mailMessages[i], (u8)i);
+        Mail_SetMessage(mail, &args->sentences[i], (u8)i);
     }
-    Mail_SetType(mail, unk->mailType);
+    Mail_SetType(mail, args->mailType);
 }

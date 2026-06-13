@@ -1,4 +1,4 @@
-#include "options_app.h"
+#include "overlay_54.h"
 
 #include <nitro/spi/ARM9/pm.h>
 
@@ -27,61 +27,61 @@
 #include "vram_transfer_manager.h"
 
 // Not to be confused with `Options`, which is almost exactly the same, save for two members being swapped. SMH
-typedef struct OptionsApp_Options {
+typedef struct OptionsMenu {
     u16 textSpeed : 4;
-    u16 soundMethod : 2;
+    u16 soundMode : 2;
     u16 battleScene : 1;
     u16 battleStyle : 1;
     u16 buttonMode : 2;
-    u16 frame : 5;
-} OptionsApp_Options;
+    u16 messageBoxStyle : 5;
+} OptionsMenu;
 
-typedef struct OptionsApp_MenuEntry {
-    u16 numStrings;
-    u16 value;
-    String *strings[20];
-} OptionsApp_MenuEntry;
+typedef struct OptionsMenuEntry {
+    u16 numChoices;
+    u16 selected;
+    String *choices[20];
+} OptionsMenuEntry;
 
-enum {
-    MENU_ENTRY_TEXT_SPEED,
-    MENU_ENTRY_BATTLE_SCENE,
-    MENU_ENTRY_BATTLE_STYLE,
-    MENU_ENTRY_SOUND_METHOD,
-    MENU_ENTRY_BUTTON_MODE,
-    MENU_ENTRY_FRAME,
-    MENU_ENTRY_6,
+enum OptionsMenuEntryID {
+    ENTRY_TEXT_SPEED = 0,
+    ENTRY_BATTLE_SCENE,
+    ENTRY_BATTLE_STYLE,
+    ENTRY_SOUND_MODE,
+    ENTRY_BUTTON_MODE,
+    ENTRY_MESSAGE_BOX_FRAME,
+    ENTRY_CLOSE,
 
-    MENU_ENTRY_COUNT,
+    MAX_ENTRIES,
 };
 
-typedef struct OptionsApp_Data {
+typedef struct OptionsMenuData {
     enum HeapID heapID;
-    u32 exitState;
-    u32 setupAndFreeState;
-    u32 fadeUnused; // unused, game writes 0 here when it's about to start a fade, but never reads from here
-    u32 unk10_0 : 2;
-    u32 currentMenuEntryId : 3;
-    u32 unk10_5 : 16; // unused
-    u32 unk10_21 : 1;
-    u32 unk10_22 : 10; // unused
+    u32 state;
+    u32 subState;
+    u32 dummy0C; // unused, game writes 0 here when it's about to start a fade, but never reads from here
+    u32 saveSelections : 2;
+    u32 cursor : 3;
+    u32 dummy10_5 : 16; // unused
+    u32 redrawMessageBox : 1;
+    u32 dummy10_22 : 10; // unused
     BgConfig *bgConfig;
-    OptionsApp_Options options;
-    Options *playerOptionsUnused; // unused copy of playerOptions
+    OptionsMenu options;
+    Options *saveOptionsUnused; // unused copy of saveOptions
     MenuInputStateMgr *menuInputPtr;
-    Options *playerOptions;
+    Options *saveOptions;
     MsgData *msgData;
     u8 filler2C[0x8];
     union {
         Window asArray[5];
         struct {
-            Window optionsTitle;
-            Window selectedOption;
-            Window frameAndTextSpeedTest;
+            Window title;
+            Window entries;
+            Window description;
             Window quitButton;
             Window confirmButton;
         };
     } windows;
-    OptionsApp_MenuEntry menuEntries[MENU_ENTRY_COUNT];
+    OptionsMenuEntry entries[MAX_ENTRIES];
     SpriteSystem *spriteRenderer;
     SpriteManager *spriteGfxHandler;
     Sprite *sprites[9];
@@ -89,9 +89,9 @@ typedef struct OptionsApp_Data {
     u32 menuInputState;
     String *frameNumText;
     u8 textPrinter;
-} OptionsApp_Data; // size: 0x32c
+} OptionsMenuData; // size: 0x32c
 
-static const s8 sOptionsApp_UnkWindowWidthOffsets[MENU_ENTRY_COUNT] = {
+static const s8 sEntryXOffsets[MAX_ENTRIES] = {
     0,
     0,
     0,
@@ -109,15 +109,15 @@ static const u32 sOptionsAppBgLayers[5] = {
     GF_BG_LYR_SUB_1,
 };
 
-static const int sNumChoicesPerMenuEntry[MENU_ENTRY_COUNT] = {
+static const int sNumChoicesPerEntry[MAX_ENTRIES] = {
     3, 2, 2, 2, 2, 20, 2
 };
 
-static const int sMenuEntryBorderYCoords[MENU_ENTRY_COUNT] = {
+static const int sEntryBorderYCoords[MAX_ENTRIES] = {
     -8, -32, -56, -80, -104, -128, -156
 };
 
-static const u16 sOptionChoiceLabelXCoords[MENU_ENTRY_COUNT][3] = {
+static const u16 sChoiceXCoords[MAX_ENTRIES][3] = {
     { 124, 172, 220 },
     { 124, 172, 0   },
     { 132, 212, 0   },
@@ -154,22 +154,22 @@ static const TouchscreenHitbox sOptionsAppTouchscreenHitboxes[16] = {
     { TOUCHSCREEN_RECTLIST_END },
 };
 
-static const u32 ov54_021E6DA8[15][2] = {
-    { MENU_ENTRY_TEXT_SPEED,   0 },
-    { MENU_ENTRY_TEXT_SPEED,   1 },
-    { MENU_ENTRY_TEXT_SPEED,   2 },
-    { MENU_ENTRY_BATTLE_SCENE, 0 },
-    { MENU_ENTRY_BATTLE_SCENE, 1 },
-    { MENU_ENTRY_BATTLE_STYLE, 0 },
-    { MENU_ENTRY_BATTLE_STYLE, 1 },
-    { MENU_ENTRY_SOUND_METHOD, 0 },
-    { MENU_ENTRY_SOUND_METHOD, 1 },
-    { MENU_ENTRY_BUTTON_MODE,  0 },
-    { MENU_ENTRY_BUTTON_MODE,  1 },
-    { MENU_ENTRY_FRAME,        3 },
-    { MENU_ENTRY_FRAME,        4 },
-    { MENU_ENTRY_6,            5 },
-    { MENU_ENTRY_6,            6 },
+static const u32 sTouchHitboxActions[15][2] = {
+    { ENTRY_TEXT_SPEED,       0 },
+    { ENTRY_TEXT_SPEED,       1 },
+    { ENTRY_TEXT_SPEED,       2 },
+    { ENTRY_BATTLE_SCENE,     0 },
+    { ENTRY_BATTLE_SCENE,     1 },
+    { ENTRY_BATTLE_STYLE,     0 },
+    { ENTRY_BATTLE_STYLE,     1 },
+    { ENTRY_SOUND_MODE,       0 },
+    { ENTRY_SOUND_MODE,       1 },
+    { ENTRY_BUTTON_MODE,      0 },
+    { ENTRY_BUTTON_MODE,      1 },
+    { ENTRY_MESSAGE_BOX_FRAME, 3 },
+    { ENTRY_MESSAGE_BOX_FRAME, 4 },
+    { ENTRY_CLOSE,            5 },
+    { ENTRY_CLOSE,            6 },
 };
 
 static const UnmanagedSpriteTemplate ov54_021E6EAC[9] = {
@@ -301,51 +301,51 @@ static const UnmanagedSpriteTemplate ov54_021E6EAC[9] = {
      },
 };
 
-static void OptionsApp_SetupGraphicsBanks(void);
-static void OptionsApp_OnVBlank(OptionsApp_Data *data);
-static BOOL ov54_021E5CE4(OptionsApp_Data *data);
-static BOOL ov54_021E5DBC(OptionsApp_Data *data);
-static void OptionsApp_SetupBgConfig(OptionsApp_Data *data);
-static void OptionsApp_FreeBgConfig(OptionsApp_Data *data);
-static void OptionsApp_SetupGraphicsData(OptionsApp_Data *data);
-static void ov54_021E6000(OptionsApp_Data *data);
-static void OptionsApp_SetupWindows(OptionsApp_Data *data);
-static void OptionsApp_FreeWindows(OptionsApp_Data *data);
-static void OptionsApp_PrintTextFrameString(OptionsApp_Data *data, String *frameNumText, BOOL instantTextSpeed);
-static void OptionsApp_SetupInterfaceText(OptionsApp_Data *data);
-static void OptionsApp_LoadMenuEntriesData(OptionsApp_Data *data);
-static void ov54_021E6418(OptionsApp_Data *data, u16 menuEntryId);
-static void OptionsApp_UpdateMenuEntryCarousel(OptionsApp_Data *data, u32 menuEntryId, OptionsApp_MenuEntry *menuEntry, s32 offset);
-static void OptionsApp_HandleKeyInput(OptionsApp_Data *data, OptionsApp_MenuEntry *menuEntry);
-static void OptionsApp_HandleInput(OptionsApp_Data *data);
-static void ov54_021E69D4(OptionsApp_Data *data, u32 menuEntryId);
-static void ov54_021E6A64(OptionsApp_Data *data);
-static void OptionsApp_SetupSpriteRenderer(OptionsApp_Data *data);
-static void OptionsApp_FreeSpriteRenderer(OptionsApp_Data *data);
-static void OptionsApp_SetupSprites(OptionsApp_Data *data);
-static void OptionsApp_SetActiveButtonsXPosition(OptionsApp_Data *data);
-static BOOL OptionsApp_ConfirmAndQuitButtonsAreDoneAnimating(OptionsApp_Data *data);
+static void SetVRAMBanks(void);
+static void OptionsMenuVBlank(OptionsMenuData *menuData);
+static BOOL SetupMenuVisuals(OptionsMenuData *menuData);
+static BOOL TeardownMenuData(OptionsMenuData *menuData);
+static void SetupBgs(OptionsMenuData *menuData);
+static void TeardownBgs(OptionsMenuData *menuData);
+static void LoadBgTiles(OptionsMenuData *menuData);
+static void TeardownTilemaps(OptionsMenuData *menuData);
+static void SetupWindows(OptionsMenuData *menuData);
+static void TeardownWindows(OptionsMenuData *menuData);
+static void PrintTextFrameString(OptionsMenuData *menuData, String *frameNumText, BOOL instantTextSpeed);
+static void PrintTitleAndEntries(OptionsMenuData *menuData);
+static void LoadAllEntryChoices(OptionsMenuData *menuData);
+static void PrintEntryChoices(OptionsMenuData *menuData, u16 entry);
+static void OptionsApp_UpdateMenuEntryCarousel(OptionsMenuData *menuData, u32 entry, OptionsMenuEntry *menuEntry, s32 offset);
+static void OptionsApp_HandleKeyInput(OptionsMenuData *menuData, OptionsMenuEntry *menuEntry);
+static void OptionsApp_HandleInput(OptionsMenuData *menuData);
+static void ov54_021E69D4(OptionsMenuData *menuData, u32 entry);
+static void ov54_021E6A64(OptionsMenuData *menuData);
+static void OptionsApp_SetupSpriteRenderer(OptionsMenuData *menuData);
+static void OptionsApp_FreeSpriteRenderer(OptionsMenuData *menuData);
+static void OptionsApp_SetupSprites(OptionsMenuData *menuData);
+static void OptionsApp_SetActiveButtonsXPosition(OptionsMenuData *menuData);
+static BOOL OptionsApp_ConfirmAndQuitButtonsAreDoneAnimating(OptionsMenuData *menuData);
 
 BOOL OptionsMenu_Init(OverlayManager *manager, int *state) {
-    OptionsApp_Args *args = OverlayManager_GetArgs(manager);
+    OptionsMenuArgs *args = OverlayManager_GetArgs(manager);
     Heap_Create(HEAP_ID_3, HEAP_ID_OPTIONS_APP, 0x30000);
 
-    OptionsApp_Data *data = OverlayManager_CreateAndGetData(manager, sizeof(OptionsApp_Data), HEAP_ID_OPTIONS_APP);
-    memset(data, 0, sizeof(OptionsApp_Data));
+    OptionsMenuData *menuData = OverlayManager_CreateAndGetData(manager, sizeof(OptionsMenuData), HEAP_ID_OPTIONS_APP);
+    memset(menuData, 0, sizeof(OptionsMenuData));
 
-    data->options.textSpeed = Options_GetTextSpeed(args->options);
-    data->options.battleScene = Options_GetBattleScene(args->options);
-    data->options.battleStyle = Options_GetBattleStyle(args->options);
-    data->options.soundMethod = Options_GetSoundMethod(args->options);
-    data->options.buttonMode = Options_GetButtonMode(args->options);
-    data->options.frame = Options_GetFrame(args->options);
+    menuData->options.textSpeed = Options_GetTextSpeed(args->options);
+    menuData->options.battleScene = Options_GetBattleScene(args->options);
+    menuData->options.battleStyle = Options_GetBattleStyle(args->options);
+    menuData->options.soundMode = Options_GetSoundMethod(args->options);
+    menuData->options.buttonMode = Options_GetButtonMode(args->options);
+    menuData->options.messageBoxStyle = Options_GetFrame(args->options);
 
-    data->menuInputPtr = args->menuInputStateMgr;
-    data->playerOptionsUnused = args->options;
-    data->heapID = HEAP_ID_OPTIONS_APP;
-    data->playerOptions = args->options;
-    data->menuInputState = MenuInputStateMgr_GetState(data->menuInputPtr);
-    data->frameNumText = String_New(40, data->heapID);
+    menuData->menuInputPtr = args->menuInputStatePtr;
+    menuData->saveOptionsUnused = args->options;
+    menuData->heapID = HEAP_ID_OPTIONS_APP;
+    menuData->saveOptions = args->options;
+    menuData->menuInputState = MenuInputStateMgr_GetState(menuData->menuInputPtr);
+    menuData->frameNumText = String_New(40, menuData->heapID);
 
     TextFlags_SetCanABSpeedUpPrint(FALSE);
     TextFlags_SetCanTouchSpeedUpPrint(FALSE);
@@ -357,95 +357,95 @@ BOOL OptionsMenu_Init(OverlayManager *manager, int *state) {
 }
 
 BOOL OptionsMenu_Exit(OverlayManager *manager, int *state) {
-    OptionsApp_Data *data = OverlayManager_GetData(manager);
+    OptionsMenuData *menuData = OverlayManager_GetData(manager);
 
-    if (data->unk10_0 == 1) {
-        data->options.textSpeed = data->menuEntries[MENU_ENTRY_TEXT_SPEED].value;
-        data->options.battleScene = data->menuEntries[MENU_ENTRY_BATTLE_SCENE].value;
-        data->options.battleStyle = data->menuEntries[MENU_ENTRY_BATTLE_STYLE].value;
-        data->options.soundMethod = data->menuEntries[MENU_ENTRY_SOUND_METHOD].value;
-        data->options.buttonMode = data->menuEntries[MENU_ENTRY_BUTTON_MODE].value;
-        data->options.frame = data->menuEntries[MENU_ENTRY_FRAME].value;
+    if (menuData->saveSelections == 1) {
+        menuData->options.textSpeed = menuData->entries[ENTRY_TEXT_SPEED].selected;
+        menuData->options.battleScene = menuData->entries[ENTRY_BATTLE_SCENE].selected;
+        menuData->options.battleStyle = menuData->entries[ENTRY_BATTLE_STYLE].selected;
+        menuData->options.soundMode = menuData->entries[ENTRY_SOUND_MODE].selected;
+        menuData->options.buttonMode = menuData->entries[ENTRY_BUTTON_MODE].selected;
+        menuData->options.messageBoxStyle = menuData->entries[ENTRY_MESSAGE_BOX_FRAME].selected;
 
-        Options_SetTextSpeed(data->playerOptions, data->options.textSpeed);
-        Options_SetBattleScene(data->playerOptions, data->options.battleScene);
-        Options_SetBattleStyle(data->playerOptions, data->options.battleStyle);
-        Options_SetSoundMethod(data->playerOptions, data->options.soundMethod);
-        Options_SetButtonMode(data->playerOptions, data->options.buttonMode);
-        Options_SetFrame(data->playerOptions, data->options.frame);
-    } else if (data->unk10_0 == 2) {
-        GF_SndSetMonoFlag(data->options.soundMethod);
-        Options_SetButtonModeOnMain(NULL, data->options.buttonMode);
-        Options_SetTextSpeed(data->playerOptions, data->options.textSpeed);
+        Options_SetTextSpeed(menuData->saveOptions, menuData->options.textSpeed);
+        Options_SetBattleScene(menuData->saveOptions, menuData->options.battleScene);
+        Options_SetBattleStyle(menuData->saveOptions, menuData->options.battleStyle);
+        Options_SetSoundMethod(menuData->saveOptions, menuData->options.soundMode);
+        Options_SetButtonMode(menuData->saveOptions, menuData->options.buttonMode);
+        Options_SetFrame(menuData->saveOptions, menuData->options.messageBoxStyle);
+    } else if (menuData->saveSelections == 2) {
+        GF_SndSetMonoFlag(menuData->options.soundMode);
+        Options_SetButtonModeOnMain(NULL, menuData->options.buttonMode);
+        Options_SetTextSpeed(menuData->saveOptions, menuData->options.textSpeed);
     }
 
-    String_Delete(data->frameNumText);
+    String_Delete(menuData->frameNumText);
 
     TextFlags_SetCanABSpeedUpPrint(TRUE);
     TextFlags_SetCanTouchSpeedUpPrint(TRUE);
 
     OverlayManager_FreeData(manager);
-    Heap_Destroy(data->heapID);
+    Heap_Destroy(menuData->heapID);
 
     return TRUE;
 }
 
 BOOL OptionsMenu_Main(OverlayManager *manager, int *state) {
-    OptionsApp_Data *data = OverlayManager_GetData(manager);
-    switch (data->exitState) {
+    OptionsMenuData *menuData = OverlayManager_GetData(manager);
+    switch (menuData->state) {
     case 0:
-        if (!ov54_021E5CE4(data)) {
+        if (!SetupMenuVisuals(menuData)) {
             return FALSE;
         }
 
-        data->fadeUnused = 0;
-        BeginNormalPaletteFade(0, 1, 1, RGB_BLACK, 6, 1, data->heapID);
-        OptionsApp_SetActiveButtonsXPosition(data);
-        SpriteSystem_DrawSprites(data->spriteGfxHandler);
+        menuData->dummy0C = 0;
+        BeginNormalPaletteFade(0, 1, 1, RGB_BLACK, 6, 1, menuData->heapID);
+        OptionsApp_SetActiveButtonsXPosition(menuData);
+        SpriteSystem_DrawSprites(menuData->spriteGfxHandler);
         break;
     case 1:
-        SpriteSystem_DrawSprites(data->spriteGfxHandler);
+        SpriteSystem_DrawSprites(menuData->spriteGfxHandler);
         if (!IsPaletteFadeFinished()) {
             return FALSE;
         }
         break;
     case 2:
-        if (data->unk10_0 != 0) {
-            SpriteSystem_DrawSprites(data->spriteGfxHandler);
+        if (menuData->saveSelections != 0) {
+            SpriteSystem_DrawSprites(menuData->spriteGfxHandler);
             break;
         }
-        OptionsApp_HandleInput(data);
-        SpriteSystem_DrawSprites(data->spriteGfxHandler);
+        OptionsApp_HandleInput(menuData);
+        SpriteSystem_DrawSprites(menuData->spriteGfxHandler);
         return FALSE;
     case 3:
-        SpriteSystem_DrawSprites(data->spriteGfxHandler);
-        if (!OptionsApp_ConfirmAndQuitButtonsAreDoneAnimating(data)) {
-            data->fadeUnused = 0;
-            BeginNormalPaletteFade(0, 0, 0, RGB_BLACK, 6, 1, data->heapID);
+        SpriteSystem_DrawSprites(menuData->spriteGfxHandler);
+        if (!OptionsApp_ConfirmAndQuitButtonsAreDoneAnimating(menuData)) {
+            menuData->dummy0C = 0;
+            BeginNormalPaletteFade(0, 0, 0, RGB_BLACK, 6, 1, menuData->heapID);
             break;
         }
         return FALSE;
     case 4:
-        if (TextPrinterCheckActive(data->textPrinter)) {
-            RemoveTextPrinter(data->textPrinter);
+        if (TextPrinterCheckActive(menuData->textPrinter)) {
+            RemoveTextPrinter(menuData->textPrinter);
         }
-        SpriteSystem_DrawSprites(data->spriteGfxHandler);
+        SpriteSystem_DrawSprites(menuData->spriteGfxHandler);
         if (!IsPaletteFadeFinished()) {
             return FALSE;
         }
         break;
     case 5:
-        if (ov54_021E5DBC(data)) {
+        if (TeardownMenuData(menuData)) {
             return TRUE;
         }
         return FALSE;
     }
 
-    data->exitState++;
+    menuData->state++;
     return FALSE;
 }
 
-static void OptionsApp_SetupGraphicsBanks(void) {
+static void SetVRAMBanks(void) {
     GraphicsBanks banks = {
         .bg = GX_VRAM_BG_128_A,
         .subbg = GX_VRAM_SUB_BG_128_C,
@@ -455,20 +455,20 @@ static void OptionsApp_SetupGraphicsBanks(void) {
     GfGfx_SetBanks(&banks);
 }
 
-static void OptionsApp_OnVBlank(OptionsApp_Data *data) {
-    if (data->unk10_21) {
-        LoadUserFrameGfx2(data->bgConfig, GF_BG_LYR_SUB_1, 0x6D, 15, data->menuEntries[MENU_ENTRY_FRAME].value, data->heapID);
-        data->unk10_21 = FALSE;
+static void OptionsMenuVBlank(OptionsMenuData *menuData) {
+    if (menuData->redrawMessageBox) {
+        LoadUserFrameGfx2(menuData->bgConfig, GF_BG_LYR_SUB_1, 0x6D, 15, menuData->entries[ENTRY_MESSAGE_BOX_FRAME].selected, menuData->heapID);
+        menuData->redrawMessageBox = FALSE;
     }
 
     SpriteSystem_TransferOam();
     NNS_GfdDoVramTransfer();
-    DoScheduledBgGpuUpdates(data->bgConfig);
+    DoScheduledBgGpuUpdates(menuData->bgConfig);
     OS_SetIrqCheckFlag(OS_IE_VBLANK);
 }
 
-static BOOL ov54_021E5CE4(OptionsApp_Data *data) {
-    switch (data->setupAndFreeState) {
+static BOOL SetupMenuVisuals(OptionsMenuData *menuData) {
+    switch (menuData->subState) {
     case 0:
         Main_SetVBlankIntrCB(NULL, NULL);
         HBlankInterruptDisable();
@@ -478,57 +478,57 @@ static BOOL ov54_021E5CE4(OptionsApp_Data *data) {
         GX_SetVisiblePlane(GX_PLANEMASK_NONE);
         GXS_SetVisiblePlane(GX_PLANEMASK_NONE);
 
-        OptionsApp_SetupGraphicsBanks();
+        SetVRAMBanks();
 
         GX_SetDispSelect(GX_DISP_SELECT_SUB_MAIN);
 
         sub_0200FBDC(0);
         sub_0200FBDC(1);
 
-        OptionsApp_SetupBgConfig(data);
-        OptionsApp_SetupSpriteRenderer(data);
+        SetupBgs(menuData);
+        OptionsApp_SetupSpriteRenderer(menuData);
         break;
 
     case 1:
-        OptionsApp_SetupGraphicsData(data);
-        data->msgData = NewMsgDataFromNarc(MSGDATA_LOAD_LAZY, NARC_msgdata_msg, NARC_msg_msg_0045_bin, data->heapID);
-        OptionsApp_LoadMenuEntriesData(data);
+        LoadBgTiles(menuData);
+        menuData->msgData = NewMsgDataFromNarc(MSGDATA_LOAD_LAZY, NARC_msgdata_msg, NARC_msg_msg_0045_bin, menuData->heapID);
+        LoadAllEntryChoices(menuData);
         break;
 
     case 2:
-        OptionsApp_SetupWindows(data);
-        OptionsApp_SetupInterfaceText(data);
-        GF_CreateVramTransferManager(32, data->heapID);
+        SetupWindows(menuData);
+        PrintTitleAndEntries(menuData);
+        GF_CreateVramTransferManager(32, menuData->heapID);
         GfGfx_EngineATogglePlanes(GX_PLANEMASK_OBJ, GF_PLANE_TOGGLE_ON);
         sub_0203A964();
-        OptionsApp_SetupSprites(data);
+        OptionsApp_SetupSprites(menuData);
 
-        Main_SetVBlankIntrCB((GFIntrCB)OptionsApp_OnVBlank, data);
-        data->setupAndFreeState = 0;
+        Main_SetVBlankIntrCB((GFIntrCB)OptionsMenuVBlank, menuData);
+        menuData->subState = 0;
         ToggleBgLayer(GF_BG_LYR_MAIN_0, GF_PLANE_TOGGLE_ON);
         return TRUE;
     }
 
-    data->setupAndFreeState++;
+    menuData->subState++;
     return FALSE;
 }
 
-static BOOL ov54_021E5DBC(OptionsApp_Data *data) {
-    switch (data->setupAndFreeState) {
+static BOOL TeardownMenuData(OptionsMenuData *menuData) {
+    switch (menuData->subState) {
     case 0:
         GF_DestroyVramTransferManager();
-        OptionsApp_FreeWindows(data);
+        TeardownWindows(menuData);
 
-        for (int i = 0; i < MENU_ENTRY_COUNT - 1; i++) {
-            for (int j = 0; j < data->menuEntries[i].numStrings; j++) {
-                String_Delete(data->menuEntries[i].strings[j]);
+        for (int i = 0; i < MAX_ENTRIES - 1; i++) {
+            for (int j = 0; j < menuData->entries[i].numChoices; j++) {
+                String_Delete(menuData->entries[i].choices[j]);
             }
         }
 
-        DestroyMsgData(data->msgData);
-        ov54_021E6000(data);
-        OptionsApp_FreeBgConfig(data);
-        OptionsApp_FreeSpriteRenderer(data);
+        DestroyMsgData(menuData->msgData);
+        TeardownTilemaps(menuData);
+        TeardownBgs(menuData);
+        OptionsApp_FreeSpriteRenderer(menuData);
         break;
     case 1:
         Main_SetVBlankIntrCB(NULL, NULL);
@@ -537,16 +537,16 @@ static BOOL ov54_021E5DBC(OptionsApp_Data *data) {
         GfGfx_DisableEngineBPlanes();
         GX_SetVisiblePlane(GX_PLANEMASK_NONE);
         GXS_SetVisiblePlane(GX_PLANEMASK_NONE);
-        data->setupAndFreeState = 0;
+        menuData->subState = 0;
         return TRUE;
     }
 
-    data->setupAndFreeState++;
+    menuData->subState++;
     return FALSE;
 }
 
-static void OptionsApp_SetupBgConfig(OptionsApp_Data *data) {
-    data->bgConfig = BgConfig_Alloc(data->heapID);
+static void SetupBgs(OptionsMenuData *menuData) {
+    menuData->bgConfig = BgConfig_Alloc(menuData->heapID);
     GraphicsModes modes = {
         .dispMode = GX_DISPMODE_GRAPHICS,
         .bgMode = GX_BGMODE_0,
@@ -629,278 +629,278 @@ static void OptionsApp_SetupBgConfig(OptionsApp_Data *data) {
     };
 
     for (int i = 0; i < 5; i++) {
-        InitBgFromTemplate(data->bgConfig, sOptionsAppBgLayers[i], &templates[i], GF_BG_TYPE_TEXT);
-        BgClearTilemapBufferAndCommit(data->bgConfig, sOptionsAppBgLayers[i]);
+        InitBgFromTemplate(menuData->bgConfig, sOptionsAppBgLayers[i], &templates[i], GF_BG_TYPE_TEXT);
+        BgClearTilemapBufferAndCommit(menuData->bgConfig, sOptionsAppBgLayers[i]);
     }
 
-    BG_ClearCharDataRange(GF_BG_LYR_MAIN_0, 32, 0, data->heapID);
-    BG_ClearCharDataRange(GF_BG_LYR_MAIN_1, 32, 0, data->heapID);
-    BG_ClearCharDataRange(GF_BG_LYR_SUB_0, 32, 0, data->heapID);
-    BG_ClearCharDataRange(GF_BG_LYR_SUB_1, 32, 0, data->heapID);
+    BG_ClearCharDataRange(GF_BG_LYR_MAIN_0, 32, 0, menuData->heapID);
+    BG_ClearCharDataRange(GF_BG_LYR_MAIN_1, 32, 0, menuData->heapID);
+    BG_ClearCharDataRange(GF_BG_LYR_SUB_0, 32, 0, menuData->heapID);
+    BG_ClearCharDataRange(GF_BG_LYR_SUB_1, 32, 0, menuData->heapID);
 }
 
-static void OptionsApp_FreeBgConfig(OptionsApp_Data *data) {
-    FreeBgTilemapBuffer(data->bgConfig, GF_BG_LYR_SUB_1);
-    FreeBgTilemapBuffer(data->bgConfig, GF_BG_LYR_SUB_0);
-    FreeBgTilemapBuffer(data->bgConfig, GF_BG_LYR_MAIN_2);
-    FreeBgTilemapBuffer(data->bgConfig, GF_BG_LYR_MAIN_1);
-    FreeBgTilemapBuffer(data->bgConfig, GF_BG_LYR_MAIN_0);
-    Heap_Free(data->bgConfig);
+static void TeardownBgs(OptionsMenuData *menuData) {
+    FreeBgTilemapBuffer(menuData->bgConfig, GF_BG_LYR_SUB_1);
+    FreeBgTilemapBuffer(menuData->bgConfig, GF_BG_LYR_SUB_0);
+    FreeBgTilemapBuffer(menuData->bgConfig, GF_BG_LYR_MAIN_2);
+    FreeBgTilemapBuffer(menuData->bgConfig, GF_BG_LYR_MAIN_1);
+    FreeBgTilemapBuffer(menuData->bgConfig, GF_BG_LYR_MAIN_0);
+    Heap_Free(menuData->bgConfig);
 }
 
-static void OptionsApp_SetupGraphicsData(OptionsApp_Data *data) {
-    GfGfxLoader_GXLoadPal(NARC_a_0_7_2, 3, GF_PAL_LOCATION_SUB_BG, GF_PAL_SLOT_0_OFFSET, 0x40, data->heapID);
-    GfGfxLoader_LoadCharData(NARC_a_0_7_2, 8, data->bgConfig, GF_BG_LYR_SUB_0, 0, 0, FALSE, data->heapID);
-    GfGfxLoader_LoadScrnData(NARC_a_0_7_2, 19, data->bgConfig, GF_BG_LYR_SUB_0, 0, 0, FALSE, data->heapID);
-    GfGfxLoader_GXLoadPal(NARC_a_0_7_2, 2, GF_PAL_LOCATION_MAIN_BG, GF_PAL_SLOT_0_OFFSET, 0x40, data->heapID);
-    GfGfxLoader_LoadCharData(NARC_a_0_7_2, 7, data->bgConfig, GF_BG_LYR_MAIN_0, 0, 0, FALSE, data->heapID);
-    GfGfxLoader_LoadScrnData(NARC_a_0_7_2, 17, data->bgConfig, GF_BG_LYR_MAIN_2, 0, 0, FALSE, data->heapID);
-    GfGfxLoader_LoadScrnData(NARC_a_0_7_2, 18, data->bgConfig, GF_BG_LYR_MAIN_0, 0, 0, FALSE, data->heapID);
+static void LoadBgTiles(OptionsMenuData *menuData) {
+    GfGfxLoader_GXLoadPal(NARC_a_0_7_2, 3, GF_PAL_LOCATION_SUB_BG, GF_PAL_SLOT_0_OFFSET, 0x40, menuData->heapID);
+    GfGfxLoader_LoadCharData(NARC_a_0_7_2, 8, menuData->bgConfig, GF_BG_LYR_SUB_0, 0, 0, FALSE, menuData->heapID);
+    GfGfxLoader_LoadScrnData(NARC_a_0_7_2, 19, menuData->bgConfig, GF_BG_LYR_SUB_0, 0, 0, FALSE, menuData->heapID);
+    GfGfxLoader_GXLoadPal(NARC_a_0_7_2, 2, GF_PAL_LOCATION_MAIN_BG, GF_PAL_SLOT_0_OFFSET, 0x40, menuData->heapID);
+    GfGfxLoader_LoadCharData(NARC_a_0_7_2, 7, menuData->bgConfig, GF_BG_LYR_MAIN_0, 0, 0, FALSE, menuData->heapID);
+    GfGfxLoader_LoadScrnData(NARC_a_0_7_2, 17, menuData->bgConfig, GF_BG_LYR_MAIN_2, 0, 0, FALSE, menuData->heapID);
+    GfGfxLoader_LoadScrnData(NARC_a_0_7_2, 18, menuData->bgConfig, GF_BG_LYR_MAIN_0, 0, 0, FALSE, menuData->heapID);
 
-    BgSetPosTextAndCommit(data->bgConfig, GF_BG_LYR_MAIN_0, BG_POS_OP_SET_Y, sMenuEntryBorderYCoords[data->currentMenuEntryId]);
+    BgSetPosTextAndCommit(menuData->bgConfig, GF_BG_LYR_MAIN_0, BG_POS_OP_SET_Y, sEntryBorderYCoords[menuData->cursor]);
 }
 
-static void ov54_021E6000(OptionsApp_Data *data) {
+static void TeardownTilemaps(OptionsMenuData *menuData) {
     // empty, maybe would've been used to free graphics data?
 }
 
-static void OptionsApp_SetupWindows(OptionsApp_Data *data) {
-    AddWindowParameterized(data->bgConfig, &data->windows.optionsTitle, GF_BG_LYR_MAIN_1, 1, 0, 12, 3, 13, 0xA);
-    AddWindowParameterized(data->bgConfig, &data->windows.selectedOption, GF_BG_LYR_MAIN_1, 1, 3, 30, 18, 13, 0x2E);
-    AddWindowParameterized(data->bgConfig, &data->windows.quitButton, GF_BG_LYR_MAIN_1, 24, 21, 7, 3, 13, 0x24A);
-    AddWindowParameterized(data->bgConfig, &data->windows.frameAndTextSpeedTest, GF_BG_LYR_SUB_1, 2, 19, 27, 4, 12, 0x1);
-    AddWindowParameterized(data->bgConfig, &data->windows.confirmButton, GF_BG_LYR_MAIN_1, 15, 21, 7, 3, 13, 0x25F);
+static void SetupWindows(OptionsMenuData *menuData) {
+    AddWindowParameterized(menuData->bgConfig, &menuData->windows.title, GF_BG_LYR_MAIN_1, 1, 0, 12, 3, 13, 0xA);
+    AddWindowParameterized(menuData->bgConfig, &menuData->windows.entries, GF_BG_LYR_MAIN_1, 1, 3, 30, 18, 13, 0x2E);
+    AddWindowParameterized(menuData->bgConfig, &menuData->windows.quitButton, GF_BG_LYR_MAIN_1, 24, 21, 7, 3, 13, 0x24A);
+    AddWindowParameterized(menuData->bgConfig, &menuData->windows.description, GF_BG_LYR_SUB_1, 2, 19, 27, 4, 12, 0x1);
+    AddWindowParameterized(menuData->bgConfig, &menuData->windows.confirmButton, GF_BG_LYR_MAIN_1, 15, 21, 7, 3, 13, 0x25F);
 
-    LoadUserFrameGfx2(data->bgConfig, GF_BG_LYR_SUB_1, 0x6D, 15, data->options.frame, data->heapID);
-    LoadFontPal0(GF_PAL_LOCATION_MAIN_BG, GF_PAL_SLOT_13_OFFSET, data->heapID);
-    LoadFontPal0(GF_PAL_LOCATION_SUB_BG, GF_PAL_SLOT_13_OFFSET, data->heapID);
-    LoadFontPal1(GF_PAL_LOCATION_MAIN_BG, GF_PAL_SLOT_12_OFFSET, data->heapID);
-    LoadFontPal1(GF_PAL_LOCATION_SUB_BG, GF_PAL_SLOT_12_OFFSET, data->heapID);
+    LoadUserFrameGfx2(menuData->bgConfig, GF_BG_LYR_SUB_1, 0x6D, 15, menuData->options.messageBoxStyle, menuData->heapID);
+    LoadFontPal0(GF_PAL_LOCATION_MAIN_BG, GF_PAL_SLOT_13_OFFSET, menuData->heapID);
+    LoadFontPal0(GF_PAL_LOCATION_SUB_BG, GF_PAL_SLOT_13_OFFSET, menuData->heapID);
+    LoadFontPal1(GF_PAL_LOCATION_MAIN_BG, GF_PAL_SLOT_12_OFFSET, menuData->heapID);
+    LoadFontPal1(GF_PAL_LOCATION_SUB_BG, GF_PAL_SLOT_12_OFFSET, menuData->heapID);
 
-    FillWindowPixelBuffer(&data->windows.optionsTitle, 0x00);
-    FillWindowPixelBuffer(&data->windows.selectedOption, 0x00);
-    FillWindowPixelBuffer(&data->windows.quitButton, 0x00);
-    FillWindowPixelBuffer(&data->windows.confirmButton, 0x00);
-    FillWindowPixelBuffer(&data->windows.frameAndTextSpeedTest, 0xFF);
+    FillWindowPixelBuffer(&menuData->windows.title, 0x00);
+    FillWindowPixelBuffer(&menuData->windows.entries, 0x00);
+    FillWindowPixelBuffer(&menuData->windows.quitButton, 0x00);
+    FillWindowPixelBuffer(&menuData->windows.confirmButton, 0x00);
+    FillWindowPixelBuffer(&menuData->windows.description, 0xFF);
 
-    ClearWindowTilemap(&data->windows.frameAndTextSpeedTest);
-    ClearWindowTilemap(&data->windows.selectedOption);
-    ClearWindowTilemap(&data->windows.optionsTitle);
+    ClearWindowTilemap(&menuData->windows.description);
+    ClearWindowTilemap(&menuData->windows.entries);
+    ClearWindowTilemap(&menuData->windows.title);
 
-    DrawFrameAndWindow2(&data->windows.frameAndTextSpeedTest, TRUE, 0x6D, 15);
+    DrawFrameAndWindow2(&menuData->windows.description, TRUE, 0x6D, 15);
 }
 
-static void OptionsApp_FreeWindows(OptionsApp_Data *data) {
-    sub_0200E5D4(&data->windows.selectedOption, FALSE);
-    ClearFrameAndWindow2(&data->windows.frameAndTextSpeedTest, FALSE);
+static void TeardownWindows(OptionsMenuData *menuData) {
+    sub_0200E5D4(&menuData->windows.entries, FALSE);
+    ClearFrameAndWindow2(&menuData->windows.description, FALSE);
 
-    for (u16 i = 0; i < NELEMS(data->windows.asArray); i++) {
-        ClearWindowTilemapAndCopyToVram(&data->windows.asArray[i]);
-        FillWindowPixelBuffer(&data->windows.asArray[i], 0x00);
-        ClearWindowTilemap(&data->windows.asArray[i]);
-        RemoveWindow(&data->windows.asArray[i]);
+    for (u16 i = 0; i < NELEMS(menuData->windows.asArray); i++) {
+        ClearWindowTilemapAndCopyToVram(&menuData->windows.asArray[i]);
+        FillWindowPixelBuffer(&menuData->windows.asArray[i], 0x00);
+        ClearWindowTilemap(&menuData->windows.asArray[i]);
+        RemoveWindow(&menuData->windows.asArray[i]);
     }
 }
 
-static void OptionsApp_PrintTextFrameString(OptionsApp_Data *data, String *frameNumText, BOOL instantTextSpeed) {
-    u32 textFrameDelay = Options_GetTextFrameDelay(data->playerOptions);
+static void PrintTextFrameString(OptionsMenuData *menuData, String *frameNumText, BOOL instantTextSpeed) {
+    u32 textFrameDelay = Options_GetTextFrameDelay(menuData->saveOptions);
 
-    if (TextPrinterCheckActive(data->textPrinter)) {
-        RemoveTextPrinter(data->textPrinter);
+    if (TextPrinterCheckActive(menuData->textPrinter)) {
+        RemoveTextPrinter(menuData->textPrinter);
     }
 
-    ReadMsgDataIntoString(data->msgData, msg_0045_00040 + data->menuEntries[MENU_ENTRY_FRAME].value, frameNumText); // WINDOW TYPE XX
+    ReadMsgDataIntoString(menuData->msgData, msg_0045_00040 + menuData->entries[ENTRY_MESSAGE_BOX_FRAME].selected, frameNumText); // WINDOW TYPE XX
 
-    FillWindowPixelBuffer(&data->windows.frameAndTextSpeedTest, 0xFF);
+    FillWindowPixelBuffer(&menuData->windows.description, 0xFF);
 
     if (instantTextSpeed) {
-        AddTextPrinterParameterizedWithColor(&data->windows.frameAndTextSpeedTest, 1, frameNumText, 4, 0, TEXT_SPEED_INSTANT, MAKE_TEXT_COLOR(1, 2, 15), NULL);
+        AddTextPrinterParameterizedWithColor(&menuData->windows.description, 1, frameNumText, 4, 0, TEXT_SPEED_INSTANT, MAKE_TEXT_COLOR(1, 2, 15), NULL);
     } else {
-        data->textPrinter = AddTextPrinterParameterizedWithColor(&data->windows.frameAndTextSpeedTest, 1, frameNumText, 4, 0, textFrameDelay, MAKE_TEXT_COLOR(1, 2, 15), NULL);
+        menuData->textPrinter = AddTextPrinterParameterizedWithColor(&menuData->windows.description, 1, frameNumText, 4, 0, textFrameDelay, MAKE_TEXT_COLOR(1, 2, 15), NULL);
     }
 }
 
-static void OptionsApp_SetupInterfaceText(OptionsApp_Data *data) {
+static void PrintTitleAndEntries(OptionsMenuData *menuData) {
     u16 i;
-    String *tmpString = String_New(40, data->heapID);
+    String *tmpString = String_New(40, menuData->heapID);
 
-    ReadMsgDataIntoString(data->msgData, msg_0045_00000, tmpString); // OPTIONS
-    AddTextPrinterParameterizedWithColor(&data->windows.optionsTitle, 0, tmpString, 2, 5, TEXT_SPEED_INSTANT, MAKE_TEXT_COLOR(15, 2, 0), NULL);
+    ReadMsgDataIntoString(menuData->msgData, msg_0045_00000, tmpString); // OPTIONS
+    AddTextPrinterParameterizedWithColor(&menuData->windows.title, 0, tmpString, 2, 5, TEXT_SPEED_INSTANT, MAKE_TEXT_COLOR(15, 2, 0), NULL);
 
     String_SetEmpty(tmpString);
-    OptionsApp_PrintTextFrameString(data, tmpString, TRUE);
+    PrintTextFrameString(menuData, tmpString, TRUE);
 
-    for (i = 0; i < MENU_ENTRY_COUNT - 1; i++) {
+    for (i = 0; i < MAX_ENTRIES - 1; i++) {
         String_SetEmpty(tmpString);
-        ReadMsgDataIntoString(data->msgData, msg_0045_00001 + i, tmpString); // Option names
-        AddTextPrinterParameterizedWithColor(&data->windows.selectedOption, 0, tmpString, 4, i * 24 + 5, TEXT_SPEED_NOTRANSFER, MAKE_TEXT_COLOR(15, 2, 0), NULL);
+        ReadMsgDataIntoString(menuData->msgData, msg_0045_00001 + i, tmpString); // Option names
+        AddTextPrinterParameterizedWithColor(&menuData->windows.entries, 0, tmpString, 4, i * 24 + 5, TEXT_SPEED_NOTRANSFER, MAKE_TEXT_COLOR(15, 2, 0), NULL);
     }
 
     String_SetEmpty(tmpString);
-    ReadMsgDataIntoString(data->msgData, msg_0045_00008, tmpString); // QUIT
-    AddTextPrinterParameterizedWithColor(&data->windows.quitButton, 0, tmpString, 0, 6, TEXT_SPEED_NOTRANSFER, MAKE_TEXT_COLOR(15, 2, 0), NULL);
+    ReadMsgDataIntoString(menuData->msgData, msg_0045_00008, tmpString); // QUIT
+    AddTextPrinterParameterizedWithColor(&menuData->windows.quitButton, 0, tmpString, 0, 6, TEXT_SPEED_NOTRANSFER, MAKE_TEXT_COLOR(15, 2, 0), NULL);
     String_SetEmpty(tmpString);
-    ReadMsgDataIntoString(data->msgData, msg_0045_00007, tmpString); // CONFIRM
-    AddTextPrinterParameterizedWithColor(&data->windows.confirmButton, 0, tmpString, 0, 6, TEXT_SPEED_NOTRANSFER, MAKE_TEXT_COLOR(15, 2, 0), NULL);
+    ReadMsgDataIntoString(menuData->msgData, msg_0045_00007, tmpString); // CONFIRM
+    AddTextPrinterParameterizedWithColor(&menuData->windows.confirmButton, 0, tmpString, 0, 6, TEXT_SPEED_NOTRANSFER, MAKE_TEXT_COLOR(15, 2, 0), NULL);
 
-    for (i = 0; i < MENU_ENTRY_COUNT; i++) {
-        ov54_021E6418(data, i);
+    for (i = 0; i < MAX_ENTRIES; i++) {
+        PrintEntryChoices(menuData, i);
     }
 
-    CopyWindowToVram(&data->windows.optionsTitle);
-    CopyWindowToVram(&data->windows.selectedOption);
-    CopyWindowToVram(&data->windows.quitButton);
-    CopyWindowToVram(&data->windows.confirmButton);
-    CopyWindowToVram(&data->windows.frameAndTextSpeedTest);
+    CopyWindowToVram(&menuData->windows.title);
+    CopyWindowToVram(&menuData->windows.entries);
+    CopyWindowToVram(&menuData->windows.quitButton);
+    CopyWindowToVram(&menuData->windows.confirmButton);
+    CopyWindowToVram(&menuData->windows.description);
 
     String_Delete(tmpString);
 }
 
-static void OptionsApp_LoadMenuEntriesData(OptionsApp_Data *data) {
+static void LoadAllEntryChoices(OptionsMenuData *menuData) {
     u16 i, j;
     u16 msgNum = 0;
-    for (i = 0; i < MENU_ENTRY_COUNT - 1; i++) {
-        data->menuEntries[i].numStrings = sNumChoicesPerMenuEntry[i];
-        for (j = 0; j < sNumChoicesPerMenuEntry[i]; j++) {
-            data->menuEntries[i].strings[j] = NewString_ReadMsgData(data->msgData, msg_0045_00009 + msgNum++); // Option values
+    for (i = 0; i < MAX_ENTRIES - 1; i++) {
+        menuData->entries[i].numChoices = sNumChoicesPerEntry[i];
+        for (j = 0; j < sNumChoicesPerEntry[i]; j++) {
+            menuData->entries[i].choices[j] = NewString_ReadMsgData(menuData->msgData, msg_0045_00009 + msgNum++); // Option values
         }
     }
 
-    data->menuEntries[MENU_ENTRY_TEXT_SPEED].value = data->options.textSpeed;
-    data->menuEntries[MENU_ENTRY_BATTLE_SCENE].value = data->options.battleScene;
-    data->menuEntries[MENU_ENTRY_BATTLE_STYLE].value = data->options.battleStyle;
-    data->menuEntries[MENU_ENTRY_SOUND_METHOD].value = data->options.soundMethod;
-    data->menuEntries[MENU_ENTRY_BUTTON_MODE].value = data->options.buttonMode;
-    data->menuEntries[MENU_ENTRY_FRAME].value = data->options.frame;
-    data->menuEntries[MENU_ENTRY_6].value = 0;
+    menuData->entries[ENTRY_TEXT_SPEED].selected = menuData->options.textSpeed;
+    menuData->entries[ENTRY_BATTLE_SCENE].selected = menuData->options.battleScene;
+    menuData->entries[ENTRY_BATTLE_STYLE].selected = menuData->options.battleStyle;
+    menuData->entries[ENTRY_SOUND_MODE].selected = menuData->options.soundMode;
+    menuData->entries[ENTRY_BUTTON_MODE].selected = menuData->options.buttonMode;
+    menuData->entries[ENTRY_MESSAGE_BOX_FRAME].selected = menuData->options.messageBoxStyle;
+    menuData->entries[ENTRY_CLOSE].selected = 0;
 }
 
-static void ov54_021E6418(OptionsApp_Data *data, u16 menuEntryId) {
+static void PrintEntryChoices(OptionsMenuData *menuData, u16 entry) {
     u32 selectedColor = MAKE_TEXT_COLOR(1, 2, 0);
     u32 notSelectedColor = MAKE_TEXT_COLOR(15, 2, 0);
     u32 color;
     u16 i;
     u8 frameDelay;
     u16 x = 0;
-    FillWindowPixelRect(&data->windows.selectedOption, 0, 108 + sOptionsApp_UnkWindowWidthOffsets[menuEntryId], menuEntryId * 24 + 5, 384, 24);
+    FillWindowPixelRect(&menuData->windows.entries, 0, 108 + sEntryXOffsets[entry], entry * 24 + 5, 384, 24);
 
-    switch (menuEntryId) {
-    case MENU_ENTRY_FRAME:
-        x = sOptionChoiceLabelXCoords[menuEntryId][0] - FontID_String_GetWidth(0, data->menuEntries[menuEntryId].strings[data->menuEntries[menuEntryId].value], 0) / 2;
-        AddTextPrinterParameterizedWithColor(&data->windows.selectedOption, 0, data->menuEntries[menuEntryId].strings[data->menuEntries[menuEntryId].value], x, menuEntryId * 24 + 5, TEXT_SPEED_NOTRANSFER, MAKE_TEXT_COLOR(1, 2, 0), NULL);
-        CopyWindowToVram(&data->windows.selectedOption);
-        OptionsApp_PrintTextFrameString(data, data->frameNumText, TRUE);
-        data->unk10_21 = TRUE;
+    switch (entry) {
+    case ENTRY_MESSAGE_BOX_FRAME:
+        x = sChoiceXCoords[entry][0] - FontID_String_GetWidth(0, menuData->entries[entry].choices[menuData->entries[entry].selected], 0) / 2;
+        AddTextPrinterParameterizedWithColor(&menuData->windows.entries, 0, menuData->entries[entry].choices[menuData->entries[entry].selected], x, entry * 24 + 5, TEXT_SPEED_NOTRANSFER, MAKE_TEXT_COLOR(1, 2, 0), NULL);
+        CopyWindowToVram(&menuData->windows.entries);
+        PrintTextFrameString(menuData, menuData->frameNumText, TRUE);
+        menuData->redrawMessageBox = TRUE;
         return;
-    case MENU_ENTRY_SOUND_METHOD:
-        GF_SndSetMonoFlag(data->menuEntries[menuEntryId].value);
+    case ENTRY_SOUND_MODE:
+        GF_SndSetMonoFlag(menuData->entries[entry].selected);
         break;
-    case MENU_ENTRY_BUTTON_MODE:
-        Options_SetButtonModeOnMain(NULL, data->menuEntries[menuEntryId].value);
+    case ENTRY_BUTTON_MODE:
+        Options_SetButtonModeOnMain(NULL, menuData->entries[entry].selected);
         break;
-    case MENU_ENTRY_TEXT_SPEED:
-        Options_SetTextSpeed(data->playerOptions, data->menuEntries[menuEntryId].value);
-        OptionsApp_PrintTextFrameString(data, data->frameNumText, FALSE);
+    case ENTRY_TEXT_SPEED:
+        Options_SetTextSpeed(menuData->saveOptions, menuData->entries[entry].selected);
+        PrintTextFrameString(menuData, menuData->frameNumText, FALSE);
         break;
     }
 
     x = 0;
-    for (i = 0; i < data->menuEntries[menuEntryId].numStrings; i++) {
-        if (i == data->menuEntries[menuEntryId].value) {
+    for (i = 0; i < menuData->entries[entry].numChoices; i++) {
+        if (i == menuData->entries[entry].selected) {
             color = selectedColor;
         } else {
             color = notSelectedColor;
         }
         // required to match a double `bls` above
-        if (i == data->menuEntries[menuEntryId].numStrings - 1) {
+        if (i == menuData->entries[entry].numChoices - 1) {
             frameDelay = TEXT_SPEED_NOTRANSFER;
         } else {
             frameDelay = TEXT_SPEED_NOTRANSFER;
         }
-        x = sOptionChoiceLabelXCoords[menuEntryId][i] - (FontID_String_GetWidth(0, data->menuEntries[menuEntryId].strings[i], 0) / 2);
-        AddTextPrinterParameterizedWithColor(&data->windows.selectedOption, 0, data->menuEntries[menuEntryId].strings[i], x, menuEntryId * 24 + 5, frameDelay, color, NULL);
+        x = sChoiceXCoords[entry][i] - (FontID_String_GetWidth(0, menuData->entries[entry].choices[i], 0) / 2);
+        AddTextPrinterParameterizedWithColor(&menuData->windows.entries, 0, menuData->entries[entry].choices[i], x, entry * 24 + 5, frameDelay, color, NULL);
     }
 
-    CopyWindowToVram(&data->windows.selectedOption);
+    CopyWindowToVram(&menuData->windows.entries);
 }
 
-static void OptionsApp_UpdateMenuEntryCarousel(OptionsApp_Data *data, u32 menuEntryId, OptionsApp_MenuEntry *menuEntry, s32 offset) {
-    if (menuEntryId == MENU_ENTRY_FRAME) {
+static void OptionsApp_UpdateMenuEntryCarousel(OptionsMenuData *menuData, u32 entry, OptionsMenuEntry *menuEntry, s32 offset) {
+    if (entry == ENTRY_MESSAGE_BOX_FRAME) {
         if (offset == -1) {
-            Sprite_SetAnimCtrlSeq(data->sprites[5], 1);
+            Sprite_SetAnimCtrlSeq(menuData->sprites[5], 1);
         } else if (offset == 1) {
-            Sprite_SetAnimCtrlSeq(data->sprites[6], 1);
+            Sprite_SetAnimCtrlSeq(menuData->sprites[6], 1);
         }
     }
 
     if (offset > 0) {
-        menuEntry->value = (menuEntry->value + offset) % menuEntry->numStrings;
+        menuEntry->selected = (menuEntry->selected + offset) % menuEntry->numChoices;
     } else if (offset < 0) {
-        menuEntry->value = (menuEntry->value + menuEntry->numStrings - 1) % menuEntry->numStrings;
+        menuEntry->selected = (menuEntry->selected + menuEntry->numChoices - 1) % menuEntry->numChoices;
     }
 }
 
-static void OptionsApp_HandleKeyInput(OptionsApp_Data *data, OptionsApp_MenuEntry *menuEntry) {
-    if (data->currentMenuEntryId != MENU_ENTRY_6) {
+static void OptionsApp_HandleKeyInput(OptionsMenuData *menuData, OptionsMenuEntry *menuEntry) {
+    if (menuData->cursor != ENTRY_CLOSE) {
         if (gSystem.newKeys & PAD_KEY_RIGHT) {
-            OptionsApp_UpdateMenuEntryCarousel(data, data->currentMenuEntryId, menuEntry, 1);
-            ov54_021E6418(data, data->currentMenuEntryId);
+            OptionsApp_UpdateMenuEntryCarousel(menuData, menuData->cursor, menuEntry, 1);
+            PrintEntryChoices(menuData, menuData->cursor);
             PlaySE(SEQ_SE_DP_SELECT);
         } else if (gSystem.newKeys & PAD_KEY_LEFT) {
-            OptionsApp_UpdateMenuEntryCarousel(data, data->currentMenuEntryId, menuEntry, -1);
-            ov54_021E6418(data, data->currentMenuEntryId);
+            OptionsApp_UpdateMenuEntryCarousel(menuData, menuData->cursor, menuEntry, -1);
+            PrintEntryChoices(menuData, menuData->cursor);
             PlaySE(SEQ_SE_DP_SELECT);
         }
-        OptionsApp_SetActiveButtonsXPosition(data);
+        OptionsApp_SetActiveButtonsXPosition(menuData);
     } else {
         if (gSystem.newKeys & PAD_KEY_LEFT) {
-            if (data->menuEntries[data->currentMenuEntryId].value == 0) {
-                data->menuEntries[data->currentMenuEntryId].value = 1;
-                ov54_021E69D4(data, data->currentMenuEntryId);
+            if (menuData->entries[menuData->cursor].selected == 0) {
+                menuData->entries[menuData->cursor].selected = 1;
+                ov54_021E69D4(menuData, menuData->cursor);
                 PlaySE(SEQ_SE_DP_SELECT);
             }
         } else if (gSystem.newKeys & PAD_KEY_RIGHT) {
-            if (data->menuEntries[data->currentMenuEntryId].value == 1) {
-                data->menuEntries[data->currentMenuEntryId].value = 0;
-                ov54_021E69D4(data, data->currentMenuEntryId);
+            if (menuData->entries[menuData->cursor].selected == 1) {
+                menuData->entries[menuData->cursor].selected = 0;
+                ov54_021E69D4(menuData, menuData->cursor);
                 PlaySE(SEQ_SE_DP_SELECT);
             }
         }
     }
 
     if (gSystem.newKeys & PAD_KEY_UP) {
-        data->currentMenuEntryId = (data->currentMenuEntryId + (MENU_ENTRY_COUNT - 1)) % MENU_ENTRY_COUNT;
-        ov54_021E69D4(data, data->currentMenuEntryId);
+        menuData->cursor = (menuData->cursor + (MAX_ENTRIES - 1)) % MAX_ENTRIES;
+        ov54_021E69D4(menuData, menuData->cursor);
         PlaySE(SEQ_SE_DP_SELECT);
     } else if (gSystem.newKeys & PAD_KEY_DOWN) {
-        data->currentMenuEntryId = (data->currentMenuEntryId + 1) % MENU_ENTRY_COUNT;
-        ov54_021E69D4(data, data->currentMenuEntryId);
+        menuData->cursor = (menuData->cursor + 1) % MAX_ENTRIES;
+        ov54_021E69D4(menuData, menuData->cursor);
         PlaySE(SEQ_SE_DP_SELECT);
-    } else if ((gSystem.newKeys & PAD_BUTTON_A) && data->currentMenuEntryId == MENU_ENTRY_6) {
-        if (data->menuEntries[data->currentMenuEntryId].value == 1) {
-            MenuInputStateMgr_SetState(data->menuInputPtr, MENU_INPUT_STATE_BUTTONS);
+    } else if ((gSystem.newKeys & PAD_BUTTON_A) && menuData->cursor == ENTRY_CLOSE) {
+        if (menuData->entries[menuData->cursor].selected == 1) {
+            MenuInputStateMgr_SetState(menuData->menuInputPtr, MENU_INPUT_STATE_BUTTONS);
             PlaySE(SEQ_SE_DP_SAVE);
-            Sprite_SetAnimCtrlSeq(data->sprites[8], 3);
-            data->unk10_0 = 1;
+            Sprite_SetAnimCtrlSeq(menuData->sprites[8], 3);
+            menuData->saveSelections = 1;
         } else {
-            MenuInputStateMgr_SetState(data->menuInputPtr, MENU_INPUT_STATE_BUTTONS);
+            MenuInputStateMgr_SetState(menuData->menuInputPtr, MENU_INPUT_STATE_BUTTONS);
             PlaySE(SEQ_SE_GS_GEARCANCEL);
-            Sprite_SetAnimCtrlSeq(data->sprites[7], 3);
-            data->unk10_0 = 2;
+            Sprite_SetAnimCtrlSeq(menuData->sprites[7], 3);
+            menuData->saveSelections = 2;
         }
     } else if (gSystem.newKeys & PAD_BUTTON_B) {
-        MenuInputStateMgr_SetState(data->menuInputPtr, MENU_INPUT_STATE_BUTTONS);
+        MenuInputStateMgr_SetState(menuData->menuInputPtr, MENU_INPUT_STATE_BUTTONS);
         PlaySE(SEQ_SE_GS_GEARCANCEL);
-        if (data->currentMenuEntryId == MENU_ENTRY_6 && data->menuEntries[data->currentMenuEntryId].value == 0) {
-            Sprite_SetAnimCtrlSeq(data->sprites[7], 3);
+        if (menuData->cursor == ENTRY_CLOSE && menuData->entries[menuData->cursor].selected == 0) {
+            Sprite_SetAnimCtrlSeq(menuData->sprites[7], 3);
         } else {
-            Sprite_SetAnimCtrlSeq(data->sprites[7], 2);
+            Sprite_SetAnimCtrlSeq(menuData->sprites[7], 2);
         }
-        data->unk10_0 = 2;
+        menuData->saveSelections = 2;
     }
 }
 
-static void OptionsApp_HandleInput(OptionsApp_Data *data) {
+static void OptionsApp_HandleInput(OptionsMenuData *menuData) {
     if (gSystem.touchNew != 0) {
         const int hitboxIndex = TouchscreenHitbox_FindRectAtTouchNew(sOptionsAppTouchscreenHitboxes);
         switch (hitboxIndex) {
@@ -908,87 +908,87 @@ static void OptionsApp_HandleInput(OptionsApp_Data *data) {
             break;
 
         case 13: // Confirm button
-            data->currentMenuEntryId = ov54_021E6DA8[hitboxIndex][0];
-            OptionsApp_SetActiveButtonsXPosition(data);
-            ov54_021E6A64(data);
-            data->unk10_0 = 1;
+            menuData->cursor = sTouchHitboxActions[hitboxIndex][0];
+            OptionsApp_SetActiveButtonsXPosition(menuData);
+            ov54_021E6A64(menuData);
+            menuData->saveSelections = 1;
             PlaySE(SEQ_SE_DP_SAVE);
-            data->menuInputState = 1;
-            MenuInputStateMgr_SetState(data->menuInputPtr, MENU_INPUT_STATE_TOUCH);
-            data->menuEntries[data->currentMenuEntryId].value = 1;
-            ov54_021E69D4(data, data->currentMenuEntryId);
-            Sprite_SetAnimCtrlSeq(data->sprites[8], 3);
+            menuData->menuInputState = 1;
+            MenuInputStateMgr_SetState(menuData->menuInputPtr, MENU_INPUT_STATE_TOUCH);
+            menuData->entries[menuData->cursor].selected = 1;
+            ov54_021E69D4(menuData, menuData->cursor);
+            Sprite_SetAnimCtrlSeq(menuData->sprites[8], 3);
             break;
 
         case 14: // Quit button
-            data->currentMenuEntryId = ov54_021E6DA8[hitboxIndex][0];
-            OptionsApp_SetActiveButtonsXPosition(data);
-            ov54_021E6A64(data);
-            data->unk10_0 = 2;
+            menuData->cursor = sTouchHitboxActions[hitboxIndex][0];
+            OptionsApp_SetActiveButtonsXPosition(menuData);
+            ov54_021E6A64(menuData);
+            menuData->saveSelections = 2;
             PlaySE(SEQ_SE_GS_GEARCANCEL);
-            data->menuInputState = 1;
-            MenuInputStateMgr_SetState(data->menuInputPtr, MENU_INPUT_STATE_TOUCH);
-            data->menuEntries[data->currentMenuEntryId].value = 0;
-            ov54_021E69D4(data, data->currentMenuEntryId);
-            Sprite_SetAnimCtrlSeq(data->sprites[7], 3);
+            menuData->menuInputState = 1;
+            MenuInputStateMgr_SetState(menuData->menuInputPtr, MENU_INPUT_STATE_TOUCH);
+            menuData->entries[menuData->cursor].selected = 0;
+            ov54_021E69D4(menuData, menuData->cursor);
+            Sprite_SetAnimCtrlSeq(menuData->sprites[7], 3);
             break;
 
         default: {
-            data->currentMenuEntryId = ov54_021E6DA8[hitboxIndex][0];
-            OptionsApp_MenuEntry *entry = &data->menuEntries[data->currentMenuEntryId];
+            menuData->cursor = sTouchHitboxActions[hitboxIndex][0];
+            OptionsMenuEntry *entry = &menuData->entries[menuData->cursor];
 
-            u32 value = ov54_021E6DA8[hitboxIndex][1];
+            u32 value = sTouchHitboxActions[hitboxIndex][1];
             if (value == 3) {
-                OptionsApp_UpdateMenuEntryCarousel(data, data->currentMenuEntryId, entry, -1);
+                OptionsApp_UpdateMenuEntryCarousel(menuData, menuData->cursor, entry, -1);
             } else if (value == 4) {
-                OptionsApp_UpdateMenuEntryCarousel(data, data->currentMenuEntryId, entry, 1);
+                OptionsApp_UpdateMenuEntryCarousel(menuData, menuData->cursor, entry, 1);
             } else {
-                entry->value = value;
+                entry->selected = value;
             }
-            ov54_021E6418(data, data->currentMenuEntryId);
-            ov54_021E69D4(data, data->currentMenuEntryId);
-            OptionsApp_SetActiveButtonsXPosition(data);
-            ov54_021E6A64(data);
-            data->menuInputState = 1;
+            PrintEntryChoices(menuData, menuData->cursor);
+            ov54_021E69D4(menuData, menuData->cursor);
+            OptionsApp_SetActiveButtonsXPosition(menuData);
+            ov54_021E6A64(menuData);
+            menuData->menuInputState = 1;
             PlaySE(SEQ_SE_DP_SELECT);
             break;
         }
         }
     } else if (gSystem.newKeys != 0) {
-        OptionsApp_HandleKeyInput(data, &data->menuEntries[data->currentMenuEntryId]);
+        OptionsApp_HandleKeyInput(menuData, &menuData->entries[menuData->cursor]);
     }
 }
 
-static void ov54_021E69D4(OptionsApp_Data *data, u32 menuEntryId) {
-    if (menuEntryId == MENU_ENTRY_6) {
+static void ov54_021E69D4(OptionsMenuData *menuData, u32 entry) {
+    if (entry == ENTRY_CLOSE) {
         ToggleBgLayer(GF_BG_LYR_MAIN_0, GF_PLANE_TOGGLE_OFF);
-        if (data->menuEntries[menuEntryId].value == 0) {
-            Sprite_SetAnimCtrlSeq(data->sprites[7], 1);
-            Sprite_SetAnimCtrlSeq(data->sprites[8], 0);
+        if (menuData->entries[entry].selected == 0) {
+            Sprite_SetAnimCtrlSeq(menuData->sprites[7], 1);
+            Sprite_SetAnimCtrlSeq(menuData->sprites[8], 0);
         } else {
-            Sprite_SetAnimCtrlSeq(data->sprites[7], 0);
-            Sprite_SetAnimCtrlSeq(data->sprites[8], 1);
+            Sprite_SetAnimCtrlSeq(menuData->sprites[7], 0);
+            Sprite_SetAnimCtrlSeq(menuData->sprites[8], 1);
         }
     } else {
-        BgSetPosTextAndCommit(data->bgConfig, GF_BG_LYR_MAIN_0, BG_POS_OP_SET_Y, sMenuEntryBorderYCoords[data->currentMenuEntryId]);
-        Sprite_SetAnimCtrlSeq(data->sprites[7], 0);
-        Sprite_SetAnimCtrlSeq(data->sprites[8], 0);
+        BgSetPosTextAndCommit(menuData->bgConfig, GF_BG_LYR_MAIN_0, BG_POS_OP_SET_Y, sEntryBorderYCoords[menuData->cursor]);
+        Sprite_SetAnimCtrlSeq(menuData->sprites[7], 0);
+        Sprite_SetAnimCtrlSeq(menuData->sprites[8], 0);
         ToggleBgLayer(GF_BG_LYR_MAIN_0, GF_PLANE_TOGGLE_ON);
     }
 }
 
-static void ov54_021E6A64(OptionsApp_Data *data) {
-    if (data->currentMenuEntryId == MENU_ENTRY_6) {
+static void ov54_021E6A64(OptionsMenuData *menuData) {
+    if (menuData->cursor == ENTRY_CLOSE) {
         ToggleBgLayer(GF_BG_LYR_MAIN_0, GF_PLANE_TOGGLE_OFF);
     }
 }
 
-static void OptionsApp_SetupSpriteRenderer(OptionsApp_Data *data) {
+static void OptionsApp_SetupSpriteRenderer(OptionsMenuData *menuData) {
     GfGfx_EngineATogglePlanes(GX_PLANEMASK_OBJ, GF_PLANE_TOGGLE_ON);
     GfGfx_EngineBTogglePlanes(GX_PLANEMASK_OBJ, GF_PLANE_TOGGLE_ON);
 
-    data->spriteRenderer = SpriteSystem_Alloc(data->heapID);
-    data->spriteGfxHandler = SpriteManager_New(data->spriteRenderer);
+    menuData->spriteRenderer = SpriteSystem_Alloc(menuData->heapID);
+    menuData->spriteGfxHandler = SpriteManager_New(menuData->spriteRenderer);
 
     const OamManagerParam unk1 = {
         .fromOBJmain = 0,
@@ -1007,8 +1007,8 @@ static void OptionsApp_SetupSpriteRenderer(OptionsApp_Data *data) {
         .charModeMain = GX_OBJVRAMMODE_CHAR_1D_32K,
         .charModeSub = GX_OBJVRAMMODE_CHAR_1D_32K,
     };
-    SpriteSystem_Init(data->spriteRenderer, &unk1, &unk2, 32);
-    SpriteSystem_InitSprites(data->spriteRenderer, data->spriteGfxHandler, 9);
+    SpriteSystem_Init(menuData->spriteRenderer, &unk1, &unk2, 32);
+    SpriteSystem_InitSprites(menuData->spriteRenderer, menuData->spriteGfxHandler, 9);
 
     u16 fileIdList[7] = {
         NARC_resdat_resdat_00000022_bin,
@@ -1019,38 +1019,38 @@ static void OptionsApp_SetupSpriteRenderer(OptionsApp_Data *data) {
         0xFFFF,
         NARC_resdat_resdat_00000077_bin,
     };
-    sub_0200D294(data->spriteRenderer, data->spriteGfxHandler, fileIdList);
+    sub_0200D294(menuData->spriteRenderer, menuData->spriteGfxHandler, fileIdList);
 
-    G2dRenderer_SetSubSurfaceCoords(SpriteSystem_GetRenderer(data->spriteRenderer), FX32_CONST(0), FX32_CONST(256));
+    G2dRenderer_SetSubSurfaceCoords(SpriteSystem_GetRenderer(menuData->spriteRenderer), FX32_CONST(0), FX32_CONST(256));
 }
 
-static void OptionsApp_FreeSpriteRenderer(OptionsApp_Data *data) {
-    SpriteSystem_DestroySpriteManager(data->spriteRenderer, data->spriteGfxHandler);
-    SpriteSystem_Free(data->spriteRenderer);
-    data->spriteGfxHandler = NULL;
+static void OptionsApp_FreeSpriteRenderer(OptionsMenuData *menuData) {
+    SpriteSystem_DestroySpriteManager(menuData->spriteRenderer, menuData->spriteGfxHandler);
+    SpriteSystem_Free(menuData->spriteRenderer);
+    menuData->spriteGfxHandler = NULL;
 }
 
-static void OptionsApp_SetupSprites(OptionsApp_Data *data) {
-    for (u16 i = 0; i < NELEMS(data->sprites); i++) {
-        data->sprites[i] = SpriteSystem_CreateSpriteFromResourceHeader(data->spriteRenderer, data->spriteGfxHandler, &ov54_021E6EAC[i]);
-        thunk_Sprite_SetPriority(data->sprites[i], 2);
-        Sprite_SetAnimActiveFlag(data->sprites[i], TRUE);
+static void OptionsApp_SetupSprites(OptionsMenuData *menuData) {
+    for (u16 i = 0; i < NELEMS(menuData->sprites); i++) {
+        menuData->sprites[i] = SpriteSystem_CreateSpriteFromResourceHeader(menuData->spriteRenderer, menuData->spriteGfxHandler, &ov54_021E6EAC[i]);
+        thunk_Sprite_SetPriority(menuData->sprites[i], 2);
+        Sprite_SetAnimActiveFlag(menuData->sprites[i], TRUE);
     }
 
-    Sprite_SetDrawFlag(data->sprites[7], TRUE);
+    Sprite_SetDrawFlag(menuData->sprites[7], TRUE);
 }
 
-static void OptionsApp_SetActiveButtonsXPosition(OptionsApp_Data *data) {
+static void OptionsApp_SetActiveButtonsXPosition(OptionsMenuData *menuData) {
     for (int i = 0; i < 5; i++) {
         s16 x, y;
-        Sprite_GetPositionXY(data->sprites[i], &x, &y);
-        x = sActiveButtonXCoords[i][data->menuEntries[i].value];
-        Sprite_SetPositionXY(data->sprites[i], x, y);
+        Sprite_GetPositionXY(menuData->sprites[i], &x, &y);
+        x = sActiveButtonXCoords[i][menuData->entries[i].selected];
+        Sprite_SetPositionXY(menuData->sprites[i], x, y);
     }
 }
 
-static BOOL OptionsApp_ConfirmAndQuitButtonsAreDoneAnimating(OptionsApp_Data *data) {
-    if (Sprite_IsAnimated(data->sprites[7]) == 0 && Sprite_IsAnimated(data->sprites[8]) == 0) {
+static BOOL OptionsApp_ConfirmAndQuitButtonsAreDoneAnimating(OptionsMenuData *menuData) {
+    if (Sprite_IsAnimated(menuData->sprites[7]) == 0 && Sprite_IsAnimated(menuData->sprites[8]) == 0) {
         return FALSE;
     }
 

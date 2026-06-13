@@ -6,7 +6,7 @@
 #include "overlay_manager.h"
 
 typedef struct OptionsMenuArgs {
-    u8 unk0[0x4];
+    u8 padding[4];
     Options *options;
     MenuInputStateMgr *menuInputStatePtr;
 } OptionsMenuArgs;

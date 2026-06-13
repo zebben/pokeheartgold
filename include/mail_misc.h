@@ -31,18 +31,21 @@ typedef struct {
     MenuInputStateMgr *menuInputPtr;
 } EasyChatArgs;
 
-typedef struct UseMailArgs {
-    u16 unk0;
-    u32 unk4;
-    u32 unk8;
-    u16 unkC;
-    u8 partyIdx;
+typedef struct MailAppArgs {
+    u16 writeMode;
+    u8 padding[2];
+    BOOL mailWritten;
+    u32 contextUnused;
+    u16 mailboxSlotUnused;
+    u8 partySlotUnused;
     u8 mailType;
     SaveData *saveData;
     Mail *mail;
     Mailbox *mailbox;
     MenuInputStateMgr *menuInputStatePtr;
-} UseMailArgs;
+} MailAppArgs;
+
+typedef MailAppArgs UseMailArgs;
 
 EasyChatArgs *EasyChat_CreateArgs(u8 a0, u8 a1, SaveData *saveData, MenuInputStateMgr *menuInputStateMgr, enum HeapID heapID);
 void EasyChat_FreeArgs(EasyChatArgs *args);

@@ -7,29 +7,33 @@
 #include "overlay_manager.h"
 #include "pm_string.h"
 
-typedef struct UnkStruct_ov55_021E5B08 {
-    u16 unk0;
-    u8 mailMessageIdx;
+typedef struct MailViewerAppArgs {
+    union {
+        u16 writeMode;
+        u16 result;
+    };
+    u8 sentenceIndex;
+    u8 horizontalSelectionIndex;
     Options *options;
     MenuInputStateMgr *menuInputStateMgr;
-    u32 mailOTID;
-    u8 unk10;
-    u8 mailLanguage;
-    u8 mailVersion;
+    u32 trainerID;
+    u8 padding;
+    u8 language;
+    u8 gameVersion;
     u8 mailType;
-    String *mailAuthorName;
-    u16 unk18[3];
-    MailMessage mailMessages[3];
-} UnkStruct_ov55_021E5B08;
+    String *trainerName;
+    u16 iconData[3];
+    MailMessage sentences[3];
+} MailViewerAppArgs;
 
-typedef struct UnkStruct_ov55_021E5924 {
+typedef struct MailApp {
     enum HeapID heapID;
-    u8 unk4[0x4];
-    EasyChatArgs *unk8;
-    OverlayManager *unkC;
-    UnkStruct_ov55_021E5B08 *unk10;
-    MailMessage unk14;
-} UnkStruct_ov55_021E5924;
+    u8 padding[4];
+    EasyChatArgs *easyChatArgs;
+    OverlayManager *subOverlayManager;
+    MailViewerAppArgs *viewerArgs;
+    MailMessage selectedSentence;
+} MailApp;
 
 BOOL ov55_UnkApp_Init(OverlayManager *manager, int *state);
 BOOL ov55_UnkApp_Main(OverlayManager *manager, int *state);

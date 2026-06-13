@@ -165,71 +165,71 @@ void sub_02090E5C(EasyChatArgs *args, MenuInputState a1) {
 
 UseMailArgs *sub_02090E68(SaveData *saveData, u16 a1, u8 partyIdx, u8 mailType, enum HeapID heapID) {
     Mailbox *mailbox = Save_Mailbox_Get(saveData);
-    UseMailArgs *ptr = Heap_AllocAtEnd(heapID, sizeof(UseMailArgs));
-    MI_CpuFill8(ptr, 0, sizeof(UseMailArgs));
+    UseMailArgs *args = Heap_AllocAtEnd(heapID, sizeof(UseMailArgs));
+    MI_CpuFill8(args, 0, sizeof(UseMailArgs));
 
-    ptr->mailType = mailType;
-    ptr->partyIdx = partyIdx;
-    ptr->mailbox = mailbox;
-    ptr->unk0 = 1;
-    ptr->unk8 = a1;
-    ptr->unkC = 0;
-    ptr->saveData = saveData;
+    args->mailType = mailType;
+    args->partySlotUnused = partyIdx;
+    args->mailbox = mailbox;
+    args->writeMode = TRUE;
+    args->contextUnused = a1;
+    args->mailboxSlotUnused = 0;
+    args->saveData = saveData;
 
     Mail *mail = Mail_New(heapID);
-    ptr->mail = mail;
+    args->mail = mail;
     Mail_Init(mail);
-    Mail_SetNewMessageDetails(ptr->mail, MAIL_NONE, partyIdx, saveData);
+    Mail_SetNewMessageDetails(args->mail, MAIL_NONE, partyIdx, saveData);
 
-    return ptr;
+    return args;
 }
 
 UseMailArgs *sub_02090EC0(SaveData *saveData, int n, u16 i, enum HeapID heapID) {
-    UseMailArgs *ptr = Heap_AllocAtEnd(heapID, sizeof(UseMailArgs));
-    MI_CpuFill8(ptr, 0, sizeof(UseMailArgs));
+    UseMailArgs *args = Heap_AllocAtEnd(heapID, sizeof(UseMailArgs));
+    MI_CpuFill8(args, 0, sizeof(UseMailArgs));
 
-    ptr->unk0 = 0;
-    ptr->unk8 = n;
-    ptr->unkC = i;
-    ptr->saveData = saveData;
+    args->writeMode = FALSE;
+    args->contextUnused = n;
+    args->mailboxSlotUnused = i;
+    args->saveData = saveData;
 
     Mailbox *mailbox = Save_Mailbox_Get(saveData);
-    ptr->mailbox = mailbox;
-    ptr->mail = Mailbox_AllocAndFetchMailI(&mailbox->msgs[0], n, i, heapID);
+    args->mailbox = mailbox;
+    args->mail = Mailbox_AllocAndFetchMailI(&mailbox->msgs[0], n, i, heapID);
 
-    return ptr;
+    return args;
 }
 
 UseMailArgs *sub_02090F00(SaveData *saveData, Pokemon *mon, enum HeapID heapID) {
-    UseMailArgs *ptr = Heap_AllocAtEnd(heapID, sizeof(UseMailArgs));
-    MI_CpuFill8(ptr, 0, sizeof(UseMailArgs));
+    UseMailArgs *args = Heap_AllocAtEnd(heapID, sizeof(UseMailArgs));
+    MI_CpuFill8(args, 0, sizeof(UseMailArgs));
 
-    ptr->unk0 = 0;
-    ptr->saveData = saveData;
+    args->writeMode = FALSE;
+    args->saveData = saveData;
 
     Mail *mail = Mail_New(heapID);
-    ptr->mail = mail;
-    GetMonData(mon, MON_DATA_MAIL, ptr->mail);
+    args->mail = mail;
+    GetMonData(mon, MON_DATA_MAIL, args->mail);
 
-    return ptr;
+    return args;
 }
 
 UseMailArgs *sub_02090F38(SaveData *saveData, u8 mailType, enum HeapID heapID) {
-    UseMailArgs *ptr = Heap_AllocAtEnd(heapID, sizeof(UseMailArgs));
-    MI_CpuFill8(ptr, 0, sizeof(UseMailArgs));
+    UseMailArgs *args = Heap_AllocAtEnd(heapID, sizeof(UseMailArgs));
+    MI_CpuFill8(args, 0, sizeof(UseMailArgs));
 
-    ptr->unk0 = 0;
-    ptr->saveData = saveData;
+    args->writeMode = FALSE;
+    args->saveData = saveData;
 
     Mail *mail = Mail_New(heapID);
-    ptr->mail = mail;
+    args->mail = mail;
     Mail_SetType(mail, mailType);
 
-    return ptr;
+    return args;
 }
 
 u32 sub_02090F6C(UseMailArgs *args) {
-    return args->unk4;
+    return args->mailWritten;
 }
 
 BOOL sub_02090F70(UseMailArgs *args, Pokemon *mon) {
